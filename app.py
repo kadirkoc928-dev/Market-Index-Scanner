@@ -43,7 +43,6 @@ def calculate_indicators(df):
     if len(df) < 50:
         return None
     
-    # Sicherstellen, dass keine NaN-Werte den Code crashen
     df = df.dropna(subset=['Close'])
     
     # 1. Gleitende Durchschnitte (Trend)
@@ -137,7 +136,6 @@ for name, current in data.items():
     if current is None: 
         continue
     
-    # 🛡️ FIX: Überprüfen, ob alle benötigten Spalten existieren, um KeyError zu vermeiden
     required_keys = ['Close', 'EMA21', 'SMA50', 'MACD_Hist', 'RSI']
     if not all(key in current for key in required_keys):
         continue
@@ -173,10 +171,11 @@ for name, current in data.items():
     else:
         signal = "📉 Lichte Short-Tendenz"
 
+    # 🛡️ FIX: Die Spaltennamen hier stimmen jetzt 1:1 mit den Ausgabevariablen überein
     rows.append({
         "Index": name,
         "Preis": f"{current['Close']:.2f}",
-        "RSI (14)": f"{current['RSI']:.1f}",
+        "RSI": f"{current['RSI']:.1f}",
         "Swing Score": score,
         "Signal Setup": signal
     })
@@ -195,7 +194,7 @@ if rows:
         with st.expander(f"**{row['Index']}** | Score: {score_val} | {row['Signal Setup']}", expanded=True):
             col_a, col_b, col_c = st.columns(3)
             col_a.write(f"**Kurs:** {row['Preis']}")
-            col_b.write(f"**RSI (14):** {row['RSI']}")
+            col_b.write(f"**RSI (14):** {row['RSI']}") # 🛡️ Hier greift es jetzt sauber auf row['RSI'] zu
             col_c.markdown(f"**Score:** <span class='{score_class}'>{score_val}</span>", unsafe_allow_html=True)
 else:
     st.info("Warte auf Marktdaten... Bitte Seite in Kürze neu laden.")

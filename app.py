@@ -7,7 +7,7 @@ import numpy as np
 st.set_page_config(
     page_title="Swing Score Dashboard",
     page_icon="📈",
-    layout="wide", # Nutzt die volle Breite, passt sich schmalen Fenstern perfekt an
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
@@ -27,7 +27,6 @@ st.markdown("""
 st.title("⚡ PRO SWING TRADER DASHBOARD")
 
 # --- INDIZES DEFINIEREN ---
-# Zuordnung von Ticker-Symbolen zu lesbaren Namen
 TICKERS = {
     "S&P 500 (SPY)": "SPY",
     "Nasdaq 100 (QQQ)": "QQQ",
@@ -44,42 +43,45 @@ def calculate_indicators(df):
     if len(df) < 50:
         return None
     
+    # Sicherstellen, dass keine NaN-Werte den Code crashen
+    df = df.dropna(subset=['Close'])
+    
     # 1. Gleitende Durchschnitte (Trend)
     df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
     df['SMA50'] = df['Close'].rolling(window=50).mean()
     
-    # 2. RSI (14) (Momentum / Überkauft-Überverkauft)
+    # 2. RSI (14)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / np.where(loss == 0, 0.00001, loss)
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # 3. MACD (Momentum)
+    # 3. MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['Signal']
     
-    return df.iloc[-1] # Letzten Handelstag (aktuell) zurückgeben
+    return df.iloc[-1]
 
 # --- DATA FETCHING ---
-@st.cache_data(ttl=900) # Zwischenspeichern für 15 Minuten, um API-Sperren zu verhindern
+@st.cache_data(ttl=900)
 def get_market_data():
     data_results = {}
     for name, ticker in TICKERS.items():
         try:
-            # Hole historischen Kurs für Indikatoren-Berechnung (mind. 100 Tage für SMA50)
             asset = yf.Ticker(ticker)
             df = asset.history(period="6mo", interval="1d")
-            if not df.empty:
-                data_results[name] = calculate_indicators(df)
+            if not df.empty and len(df) >= 50:
+                calculated = calculate_indicators(df)
+                if calculated is not None:
+                    data_results[name] = calculated
         except Exception:
             pass
             
-    # VIX separat abrufen
-    vix_val = 15.0 # Fallback
+    vix_val = 15.0
     try:
         vix_df = yf.Ticker("^VIX").history(period="1d")
         if not vix_df.empty:
@@ -92,10 +94,9 @@ def get_market_data():
 # Daten laden
 data, vix = get_market_data()
 
-# --- SIDEBAR / GLOBAL METRICS (MARKSTIMMUNG) ---
+# --- SIDEBAR / GLOBAL METRICS ---
 col1, col2 = st.columns(2)
 
-# 1. VIX Indikator Auswertung
 with col1:
     st.markdown('<div class="metric-box">', unsafe_allow_html=True)
     if vix < 15:
@@ -107,15 +108,13 @@ with col1:
     st.metric(label="VIX (S&P 500 Volatilität)", value=f"{vix:.2f}", delta=vix_status, delta_color="normal")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# 2. Fear & Greed Proxy Berechnung
-# Wir berechnen einen mathematischen Proxy basierend auf dem durchschnittlichen RSI der Indizes & VIX
 with col2:
     st.markdown('<div class="metric-box">', unsafe_allow_html=True)
-    if data:
-        avg_rsi = np.mean([data[idx]['RSI'] for idx in data if data[idx] is not None])
-        # Formel zur Annäherung an Fear & Greed (Skala 0-100)
+    valid_rsis = [data[idx]['RSI'] for idx in data if data[idx] is not None and 'RSI' in data[idx]]
+    if valid_rsis:
+        avg_rsi = np.mean(valid_rsis)
         fg_score = int(avg_rsi * 0.7 + (40 - vix) * 1.5)
-        fg_score = max(0, min(100, fg_score)) # Begrenzung auf 0-100
+        fg_score = max(0, min(100, fg_score))
     else:
         fg_score = 50
         
@@ -135,33 +134,36 @@ st.subheader("📊 Index Swing-Scores (1D Chart)")
 
 rows = []
 for name, current in data.items():
-    if current is None: continue
+    if current is None: 
+        continue
     
-    # --- SWING SCORE LOGIK (Gewichtung wie ein Profi) ---
+    # 🛡️ FIX: Überprüfen, ob alle benötigten Spalten existieren, um KeyError zu vermeiden
+    required_keys = ['Close', 'EMA21', 'SMA50', 'MACD_Hist', 'RSI']
+    if not all(key in current for key in required_keys):
+        continue
+        
     score = 0
     
-    # 1. Trend Filter (Max +50 oder -50)
-    # Ist Kurs über EMA21 und EMA21 über SMA50?
+    # 1. Trend Filter
     if current['Close'] > current['EMA21'] and current['EMA21'] > current['SMA50']:
         score += 50
     elif current['Close'] < current['EMA21'] and current['EMA21'] < current['SMA50']:
         score -= 50
         
-    # 2. Momentum Filter (Max +30 oder -30)
+    # 2. Momentum Filter
     if current['MACD_Hist'] > 0:
         score += 30
     else:
         score -= 30
         
-    # 3. RSI Erschöpfung/Timing (Max +20 oder -20)
-    if 30 <= current['RSI'] <= 65: # Gesunder Aufwärtstrend, Platz nach oben
+    # 3. RSI Erschöpfung
+    if 30 <= current['RSI'] <= 65:
         score += 20
-    elif current['RSI'] > 70: # Überkauft (Achtung Rücksetzer!)
+    elif current['RSI'] > 70:
         score -= 10
-    elif current['RSI'] < 30: # Massiv überverkauft (Möglicher Rebound)
+    elif current['RSI'] < 30:
         score += 20
         
-    # Signal-Zusammenfassung
     if score >= 40:
         signal = "🚀 STRONG LONG"
     elif score > 0:
@@ -179,24 +181,23 @@ for name, current in data.items():
         "Signal Setup": signal
     })
 
-# DataFrame erstellen
-df_display = pd.DataFrame(rows)
-
-# Daten formatiert anzeigen
-for index, row in df_display.iterrows():
-    # Farbliche Kennzeichnung je nach Score
-    score_val = row['Swing Score']
-    if score_val >= 40:
-        score_class = "score-long"
-    elif score_val <= -40:
-        score_class = "score-short"
-    else:
-        score_class = "score-neutral"
-        
-    with st.expander(f"**{row['Index']}** | Score: {score_val} | {row['Signal Setup']}", expanded=True):
-        col_a, col_b, col_c = st.columns(3)
-        col_a.write(f"**Kurs:** {row['Preis']}")
-        col_b.write(f"**RSI (14):** {row['RSI']}")
-        col_c.markdown(f"**Score:** <span class='{score_class}'>{score_val}</span>", unsafe_allow_html=True)
+if rows:
+    df_display = pd.DataFrame(rows)
+    for index, row in df_display.iterrows():
+        score_val = row['Swing Score']
+        if score_val >= 40:
+            score_class = "score-long"
+        elif score_val <= -40:
+            score_class = "score-short"
+        else:
+            score_class = "score-neutral"
+            
+        with st.expander(f"**{row['Index']}** | Score: {score_val} | {row['Signal Setup']}", expanded=True):
+            col_a, col_b, col_c = st.columns(3)
+            col_a.write(f"**Kurs:** {row['Preis']}")
+            col_b.write(f"**RSI (14):** {row['RSI']}")
+            col_c.markdown(f"**Score:** <span class='{score_class}'>{score_val}</span>", unsafe_allow_html=True)
+else:
+    st.info("Warte auf Marktdaten... Bitte Seite in Kürze neu laden.")
 
 st.caption("Live-Daten aktualisieren sich automatisch alle 15 Minuten. Basis: TradingView Standard-Indikatoren-Setups.")
